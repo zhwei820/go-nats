@@ -8,6 +8,8 @@ install:
 - git clone https://github.com/nats-io/gnatsd.git vendor/github.com/nats-io/gnatsd;
 - cd vendor/github.com/nats-io/gnatsd;
 - git checkout jwt;
+- go install ./...
+- cd ../../../..
 - go get github.com/nats-io/nkeys
 - go get github.com/nats-io/jwt
 - go get github.com/mattn/goveralls
