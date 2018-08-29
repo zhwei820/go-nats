@@ -5,7 +5,9 @@ go:
 - 1.9.x
 install:
 - go get -t ./...
-- go get github.com/nats-io/gnatsd
+- git clone git@github.com:nats-io/gnatsd.git vendor/github.com/nats-io/gnatsd;
+- cd vendor/github.com/nats-io/gnatsd;
+- git checkout jwt;
 - go get github.com/nats-io/nkeys
 - go get github.com/nats-io/jwt
 - go get github.com/mattn/goveralls
