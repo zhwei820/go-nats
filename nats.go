@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,6 +137,21 @@ type ConnHandler func(*Conn)
 // ErrHandler is used to process asynchronous errors encountered
 // while processing inbound messages.
 type ErrHandler func(*Conn, *Subscription, error)
+
+// AuthHandler represents the client code for working with the
+// server for JWT/Nonce based authentication. The expected signature
+// is the one that a valid NKey will return.
+type AuthHandler interface {
+	// Sign is called by the library when the server sends a nonce.
+	Sign(nonce []byte) ([]byte, error)
+	// ACL should return a valid JWT token for an account the server knows.
+	// If the server is not in account-mode, this string can be empty.
+	ACL() (string, error)
+	// ID should return a public key associated with a client key known to the server.
+	// If the server is not in clientkey-mode, this string can be empty.
+	// If an ACL and ID are provided, the ID in the ACL should match the ID.
+	ID() (string, error)
+}
 
 // asyncCB is used to preserve order for async callbacks.
 type asyncCB struct {
@@ -268,6 +284,12 @@ type Options struct {
 
 	// Token sets the token to be used when connecting to a server.
 	Token string
+
+	// Auth sets the callback handler's used to sign the server's nonce and
+	// provide the JWT used for access control.
+	// The signature identifies the user for this connection. Because this is a callback,
+	// the library doesn't need to have access to the user's private key.
+	Auth AuthHandler
 
 	// Dialer allows a custom net.Dialer when forming connections.
 	// DEPRECATED: should use CustomDialer instead.
@@ -428,6 +450,7 @@ type serverInfo struct {
 	MaxPayload   int64    `json:"max_payload"`
 	ConnectURLs  []string `json:"connect_urls,omitempty"`
 	Proto        int      `json:"proto,omitempty"`
+	Nonce        string   `json:"nonce,omitempty"`
 }
 
 const (
@@ -451,6 +474,9 @@ type connectInfo struct {
 	Version  string `json:"version"`
 	Protocol int    `json:"protocol"`
 	Echo     bool   `json:"echo"`
+	Sig      string `json:"sig,omitempty"`
+	ACL      string `json:"acl,omitempty"`
+	ID       string `json:"id,omitempty"`
 }
 
 // MsgHandler is a callback function that processes messages delivered to
@@ -678,6 +704,14 @@ func Token(token string) Option {
 	}
 }
 
+// Auth sets the callbacks for signing a server nonce and providing a JWT.
+func Auth(nh AuthHandler) Option {
+	return func(o *Options) error {
+		o.Auth = nh
+		return nil
+	}
+}
+
 // Dialer is an Option to set the dialer which will be used when
 // attempting to establish a connection.
 // DEPRECATED: Should use CustomDialer instead.
@@ -756,6 +790,16 @@ func (nc *Conn) SetErrorHandler(cb ErrHandler) {
 	nc.mu.Lock()
 	defer nc.mu.Unlock()
 	nc.Opts.AsyncErrorCB = cb
+}
+
+// SetAuthHandler will set the async auth handler.
+func (nc *Conn) SetAuthHandler(cb AuthHandler) {
+	if nc == nil {
+		return
+	}
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	nc.Opts.Auth = cb
 }
 
 // Process the url string argument to Connect. Return an array of
@@ -1251,7 +1295,7 @@ func (nc *Conn) sendProto(proto string) {
 // applicable. The lock is assumed to be held upon entering.
 func (nc *Conn) connectProto() (string, error) {
 	o := nc.Opts
-	var user, pass, token string
+	var user, pass, token, sig, acl, clientId string
 	u := nc.url.User
 	if u != nil {
 		// if no password, assume username is authToken
@@ -1268,8 +1312,25 @@ func (nc *Conn) connectProto() (string, error) {
 		token = nc.Opts.Token
 	}
 
+	if nc.info.Nonce != "" && o.Auth != nil {
+		rawSig, err := o.Auth.Sign([]byte(nc.info.Nonce))
+		if err != nil {
+			return "", err
+		}
+		sig = base64.RawStdEncoding.EncodeToString(rawSig)
+		acl, err = o.Auth.ACL()
+		if err != nil {
+			return "", err
+		}
+
+		clientId, err = o.Auth.ID()
+		if err != nil {
+			return "", err
+		}
+	}
+
 	cinfo := connectInfo{o.Verbose, o.Pedantic, user, pass, token,
-		o.Secure, o.Name, LangString, Version, clientProtoInfo, !o.NoEcho}
+		o.Secure, o.Name, LangString, Version, clientProtoInfo, !o.NoEcho, sig, acl, clientId}
 
 	b, err := json.Marshal(cinfo)
 	if err != nil {

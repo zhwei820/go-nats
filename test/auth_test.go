@@ -23,6 +23,8 @@ import (
 	"github.com/nats-io/gnatsd/server"
 	"github.com/nats-io/gnatsd/test"
 	"github.com/nats-io/go-nats"
+	"github.com/nats-io/jwt"
+	"github.com/nats-io/nkeys"
 )
 
 func TestAuth(t *testing.T) {
@@ -233,4 +235,125 @@ func TestPermViolation(t *testing.T) {
 	if nc.IsClosed() {
 		t.Fatal("Connection should be not be closed")
 	}
+}
+
+type testAuthHandler struct {
+	key nkeys.KeyPair
+	acl string
+	id  string
+}
+
+func (t *testAuthHandler) Sign(nonce []byte) ([]byte, error) {
+	return t.key.Sign(nonce)
+}
+
+func (t *testAuthHandler) ACL() (string, error) {
+	return t.acl, nil
+}
+
+func (t *testAuthHandler) ID() (string, error) {
+	return t.id, nil
+}
+
+func TestJWTAuth(t *testing.T) {
+	acct, _ := nkeys.CreateAccount(nil)
+	pub, _ := acct.PublicKey()
+	user, _ := nkeys.CreateUser(nil)
+
+	claims := jwt.NewClaims()
+	claims.Nats["id"], _ = user.PublicKey()
+
+	acl, _ := claims.Encode(acct)
+
+	handler := &testAuthHandler{
+		key: user,
+		acl: acl,
+	}
+
+	acctJwt := jwt.NewClaims()
+	acctJwt.Issuer = pub
+	encoded, _ := acctJwt.Encode(acct)
+
+	opts := test.DefaultTestOptions
+	opts.Port = 8232
+	opts.Account = encoded
+	opts.MaxControlLine = 1024
+	s := RunServerWithOptions(opts)
+	defer s.Shutdown()
+
+	_, err := nats.Connect("nats://localhost:8232")
+	if err == nil {
+		t.Fatal("Should have received an error while trying to connect")
+	}
+
+	nc, err := nats.Connect("nats://localhost:8232", nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Should have connected successfully: %v", err)
+	}
+	nc.Close()
+}
+
+func TestJWTAuthAccountOnly(t *testing.T) {
+	acct, _ := nkeys.CreateAccount(nil)
+	pub, _ := acct.PublicKey()
+
+	claims := jwt.NewClaims()
+	claims.Nats["id"] = pub
+
+	acl, _ := claims.Encode(acct)
+
+	handler := &testAuthHandler{
+		key: acct,
+		acl: acl,
+	}
+
+	acctJwt := jwt.NewClaims()
+	acctJwt.Issuer = pub
+	encoded, _ := acctJwt.Encode(acct)
+
+	opts := test.DefaultTestOptions
+	opts.Port = 8232
+	opts.Account = encoded
+	opts.MaxControlLine = 1024
+	s := RunServerWithOptions(opts)
+	defer s.Shutdown()
+
+	_, err := nats.Connect("nats://localhost:8232")
+	if err == nil {
+		t.Fatal("Should have received an error while trying to connect")
+	}
+
+	nc, err := nats.Connect("nats://localhost:8232", nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Should have connected successfully: %v", err)
+	}
+	nc.Close()
+}
+
+func TestClientKeyAuth(t *testing.T) {
+	user, _ := nkeys.CreateUser(nil)
+	pub, _ := user.PublicKey()
+
+	handler := &testAuthHandler{
+		key: user,
+		id:  pub,
+	}
+
+	opts := test.DefaultTestOptions
+	opts.Port = 8232
+	opts.ClientKey = pub
+	opts.MaxControlLine = 1024
+	s := RunServerWithOptions(opts)
+	defer s.Shutdown()
+
+	_, err := nats.Connect("nats://localhost:8232")
+	if err == nil {
+		t.Fatal("Should have received an error while trying to connect")
+	}
+
+	nc, err := nats.Connect("nats://localhost:8232", nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Should have connected successfully: %v", err)
+	}
+	nc.Close()
 }
