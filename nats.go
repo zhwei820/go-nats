@@ -185,7 +185,6 @@ type CustomDialer interface {
 
 // Options can be used to create a customized connection.
 type Options struct {
-
 	// Url represents a single NATS server url to which the client
 	// will be connecting. If the Servers option is also set, it
 	// then becomes the first server in the Servers array.
@@ -2034,7 +2033,7 @@ func (nc *Conn) waitForMsgs(s *Subscription) {
 
 		// Deliver the message.
 		if m != nil && (max == 0 || delivered <= max) {
-			mcb(m)
+			go mcb(m)
 		}
 		// If we have hit the max for delivered msgs, remove sub.
 		if max > 0 && delivered >= max {
